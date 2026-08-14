@@ -1,0 +1,16 @@
+Garment Name: Dark Green Utility Jacket
+Action: Replace
+Worn Area: Upper body
+Garment Type: Hooded utility jacket
+Color: Dark green
+Material or Texture: Matte woven fabric
+Fit: Relaxed fit
+Length: Hip length
+Sleeves: Long sleeves with elastic cuffs
+Neckline or Collar: Attached hood
+Closure: Front zipper
+Open or Closed: Zipped closed
+Pockets: Two large utility pockets on the front
+Pattern: Solid
+Visible Logo, Graphic, or Text: Small white logo on the left chest
+Other Visible Details: Slightly dropped shoulders

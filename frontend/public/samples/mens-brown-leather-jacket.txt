@@ -1,0 +1,16 @@
+Garment Name: Men's Brown Leather Moto Jacket
+Action: Replace
+Worn Area: Upper body
+Garment Type: Moto-style leather jacket
+Color: Medium cognac brown
+Material or Texture: Smooth leather with a natural fine grain
+Fit: Tailored modern fit
+Length: Waist length
+Sleeves: Long sleeves
+Neckline or Collar: Short stand collar with a snap tab
+Closure: Center silver metal front zipper
+Open or Closed: Fully zipped closed
+Pockets: Two diagonal front zip pockets
+Pattern: Solid
+Visible Logo, Graphic, or Text: None
+Other Visible Details: Lightly quilted shoulder panels, clean paneled seams, and a straight finished hem

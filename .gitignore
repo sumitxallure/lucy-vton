@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.local
+*.log
+bulk-wardrobe-review.csv
+__pycache__/
+*.pyc
+*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
