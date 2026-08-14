@@ -5,6 +5,7 @@ import {
   CircleStop,
   Download,
   FileText,
+  Hand,
   LoaderCircle,
   Mic,
   Plus,
@@ -18,6 +19,8 @@ import {
 } from "lucide-react";
 import { createDecartClient, models, type RealTimeClient } from "@decartai/sdk";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useGestureControls } from "./gesture/useGestureControls";
+import type { GestureCommand } from "./gesture/gestureTypes";
 
 type Garment = {
   id: string;
@@ -477,12 +480,15 @@ export default function App() {
   const [message, setMessage] = useState("Add one or more garment images to begin.");
   const [isRecording, setIsRecording] = useState(false);
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
+  const [capturedLookUrl, setCapturedLookUrl] = useState<string | null>(null);
+  const [capturedLookFileName, setCapturedLookFileName] = useState<string | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isApplying, setIsApplying] = useState(false);
   const [isWardrobeLoading, setIsWardrobeLoading] = useState(true);
   const [isWardrobeSaving, setIsWardrobeSaving] = useState(false);
   const [isOutputStreamAttached, setIsOutputStreamAttached] = useState(false);
   const [isOutputVideoReady, setIsOutputVideoReady] = useState(false);
+  const [gestureEnabled, setGestureEnabled] = useState(true);
   const [localFrameAspect, setLocalFrameAspect] = useState<VideoFrameAspect>("empty");
   const [outputFrameAspect, setOutputFrameAspect] = useState<VideoFrameAspect>("empty");
   const [diagnostics, setDiagnostics] = useState<SessionDiagnostics>({
@@ -514,6 +520,7 @@ export default function App() {
   const recordingTimerRef = useRef<number | null>(null);
   const garmentUrlsRef = useRef(new Set<string>());
   const recordingUrlRef = useRef<string | null>(null);
+  const capturedLookUrlRef = useRef<string | null>(null);
   const applyStartedAtRef = useRef<number | null>(null);
   const isApplyingRef = useRef(false);
   const queuedGarmentRef = useRef<Garment | null>(null);
@@ -609,6 +616,21 @@ export default function App() {
     setMessage(garments.length ? "Camera stopped. Ready when you are." : "Add one or more garment images to begin.");
   }, [garments.length, stopRecording]);
 
+  const stopLiveTryOn = useCallback(() => {
+    stopRecording();
+    const realtime = realtimeRef.current;
+    realtimeRef.current = null;
+    realtime?.disconnect();
+    outputStreamRef.current?.getTracks().forEach((track) => track.stop());
+    outputStreamRef.current = null;
+    if (outputVideoRef.current) outputVideoRef.current.srcObject = null;
+    setIsOutputStreamAttached(false);
+    setIsOutputVideoReady(false);
+    setOutputFrameAspect("empty");
+    setStatus(localStreamRef.current ? "camera" : "idle");
+    setMessage("Live try-on stopped. Your camera and gesture controls remain active.");
+  }, [stopRecording]);
+
   const ensureGarmentFile = useCallback(async (garment: Garment) => {
     if (garment.file) return garment;
     if (!garment.imageUrl) throw new Error(`Could not load image for ${garment.name}.`);
@@ -678,6 +700,7 @@ export default function App() {
       outputStreamRef.current?.getTracks().forEach((track) => track.stop());
       garmentUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+      if (capturedLookUrlRef.current) URL.revokeObjectURL(capturedLookUrlRef.current);
       clearRecordingTimer();
     };
   }, [clearRecordingTimer]);
@@ -1155,6 +1178,23 @@ export default function App() {
     }
   };
 
+  const selectAdjacentGarment = (direction: "next" | "previous") => {
+    const availableGarments = garmentsRef.current.filter((garment) => garment.description);
+    if (!availableGarments.length) {
+      setMessage("Add a garment with a description before using swipe controls.");
+      return;
+    }
+
+    const currentIndex = availableGarments.findIndex((garment) => garment.id === selectedId);
+    const step = direction === "next" ? 1 : -1;
+    const nextIndex = currentIndex < 0
+      ? 0
+      : (currentIndex + step + availableGarments.length) % availableGarments.length;
+    const nextGarment = availableGarments[nextIndex];
+    selectGarment(nextGarment);
+    setMessage(`${direction === "next" ? "Next" : "Previous"} garment: ${nextGarment.name}.`);
+  };
+
   const removeGarment = async (garment: Garment) => {
     if (garment.storageId) {
       try {
@@ -1224,6 +1264,83 @@ export default function App() {
     anchor.download = `lucy-try-on-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
     anchor.click();
   };
+
+  const captureCurrentLook = async () => {
+    const video = outputVideoRef.current;
+    if (!video || !isOutputVideoReady || !video.videoWidth || !video.videoHeight) {
+      setMessage("Wait for the Lucy output before capturing a look.");
+      return;
+    }
+
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Could not prepare the image capture.");
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((result) => {
+          if (result) resolve(result);
+          else reject(new Error("Could not capture the current look."));
+        }, "image/png");
+      });
+      const url = URL.createObjectURL(blob);
+      if (capturedLookUrlRef.current) URL.revokeObjectURL(capturedLookUrlRef.current);
+      const fileName = `lucy-look-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+      capturedLookUrlRef.current = url;
+      setCapturedLookUrl(url);
+      setCapturedLookFileName(fileName);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      anchor.click();
+      setMessage("Current Lucy look captured. Use Download photo if the browser did not save it automatically.");
+    } catch (error) {
+      setMessage(readableError(error));
+    }
+  };
+
+  const downloadCapturedLook = () => {
+    if (!capturedLookUrl || !capturedLookFileName) return;
+    const anchor = document.createElement("a");
+    anchor.href = capturedLookUrl;
+    anchor.download = capturedLookFileName;
+    anchor.click();
+  };
+
+  const handleGestureCommand = (command: GestureCommand) => {
+    if (isApplyingRef.current || status === "connecting") {
+      setMessage("Please wait for the current Lucy update to finish.");
+      return;
+    }
+
+    if (command === "next-garment") {
+      selectAdjacentGarment("next");
+      return;
+    }
+    if (command === "previous-garment") {
+      selectAdjacentGarment("previous");
+      return;
+    }
+    if (command === "capture-look") {
+      void captureCurrentLook();
+      return;
+    }
+
+    if (realtimeRef.current?.isConnected() || status === "live") {
+      stopLiveTryOn();
+    } else {
+      void applyGarment();
+    }
+  };
+
+  const gestureActive = gestureEnabled && Boolean(localStreamRef.current);
+  const { modelStatus: gestureModelStatus, detectedGesture } = useGestureControls({
+    enabled: gestureActive,
+    videoRef: localVideoRef,
+    onCommand: handleGestureCommand,
+  });
 
   const downloadTestReport = () => {
     const now = performance.now();
@@ -1462,13 +1579,20 @@ export default function App() {
             )}
 
             <button
-              className="primary-button accent"
+              className={`primary-button ${status === "live" ? "" : "accent"}`}
               type="button"
-              disabled={!localStreamRef.current || !selectedGarment?.description || isApplying}
-              onClick={() => void applyGarment()}
+              disabled={status === "connecting" || isApplying || (status !== "live" && (!localStreamRef.current || !selectedGarment?.description))}
+              onClick={() => {
+                if (status === "live") stopLiveTryOn();
+                else void applyGarment();
+              }}
             >
-              {isApplying ? <LoaderCircle className="spin" size={18} /> : <Sparkles size={18} />}
-              {status === "live" ? "Apply look" : "Start live try-on"}
+              {isApplying
+                ? <LoaderCircle className="spin" size={18} />
+                : status === "live"
+                  ? <CircleStop size={18} />
+                  : <Sparkles size={18} />}
+              {status === "live" ? "Stop live try-on" : "Start live try-on"}
             </button>
 
             <div className="control-spacer" />
@@ -1485,6 +1609,11 @@ export default function App() {
             {recordingUrl && !isRecording && (
               <button className="secondary-button" type="button" onClick={downloadRecording}>
                 <Download size={18} /> Download
+              </button>
+            )}
+            {capturedLookUrl && (
+              <button className="secondary-button" type="button" onClick={downloadCapturedLook}>
+                <Download size={18} /> Download photo
               </button>
             )}
           </div>
@@ -1543,6 +1672,23 @@ export default function App() {
             <input type="checkbox" checked={enhance} onChange={(event) => setEnhance(event.target.checked)} />
             <span className="toggle" aria-hidden="true"><span /></span>
           </label>
+
+          <label className="toggle-row gesture-toggle">
+            <span>
+              <strong>Hand gestures</strong>
+              <small>Swipe, open palm, or thumbs up</small>
+            </span>
+            <input type="checkbox" checked={gestureEnabled} onChange={(event) => setGestureEnabled(event.target.checked)} />
+            <span className="toggle" aria-hidden="true"><span /></span>
+          </label>
+
+          <div className={`gesture-status ${gestureModelStatus}`}>
+            {gestureModelStatus === "loading" ? <LoaderCircle className="spin" size={17} /> : <Hand size={17} />}
+            <div>
+              <strong>{gestureModelStatus === "ready" ? detectedGesture : gestureModelStatus === "loading" ? "Loading gestures" : gestureModelStatus === "error" ? "Gesture error" : "Gestures waiting"}</strong>
+              <span>{!localStreamRef.current && gestureEnabled ? "Start the camera to enable gestures" : detectedGesture}</span>
+            </div>
+          </div>
 
           <label className="field-label" htmlFor="resolution">Output quality</label>
           <select
