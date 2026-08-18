@@ -1,4 +1,6 @@
 export type RecognizedGesture = "None" | "Open_Palm" | "Thumb_Up";
+export type RecognizedPose = "None" | "Left_Hand_Raised" | "Right_Hand_Raised";
+export type GestureSource = "none" | "canned" | "landmarks";
 
 export type GestureCommand =
   | "next-garment"
@@ -8,14 +10,18 @@ export type GestureCommand =
 
 export type GestureSample = {
   gesture: RecognizedGesture;
+  gestureSource: GestureSource;
+  extendedFingerCount: number;
+  pose: RecognizedPose;
   confidence: number;
+  poseConfidence: number;
   x: number | null;
   timestamp: number;
 };
 
 export type GestureWorkerRequest =
   | { type: "initialize" }
-  | { type: "frame"; bitmap: ImageBitmap; timestamp: number };
+  | { type: "frame"; gestureBitmap: ImageBitmap; poseBitmap: ImageBitmap; timestamp: number };
 
 export type GestureWorkerResponse =
   | { type: "ready" }

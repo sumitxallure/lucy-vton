@@ -53,6 +53,15 @@ type AppStatus = "idle" | "camera" | "connecting" | "live" | "error";
 type OutputResolution = "720p" | "1080p";
 type VideoFrameAspect = "empty" | "portrait" | "landscape";
 
+type CameraInputDiagnostics = {
+  label: string | null;
+  width: number | null;
+  height: number | null;
+  frameRate: number | null;
+  aspectRatio: number | null;
+  facingMode: string | null;
+};
+
 type SessionDiagnostics = {
   sessionStartedAt: number | null;
   connectedAt: number | null;
@@ -65,6 +74,7 @@ type SessionDiagnostics = {
   outputWidth: number | null;
   outputHeight: number | null;
   outputFps: number | null;
+  inputCamera: CameraInputDiagnostics;
   recordingBytes: number | null;
   events: string[];
 };
@@ -102,6 +112,9 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001
 const GARMENT_IMAGE_MAX_SIDE = 1280;
 const GARMENT_IMAGE_QUALITY = 0.9;
 const VTON_PROMPT_MAX_WORDS = 75;
+const DESKTOP_CAMERA_WIDTH = 1920;
+const DESKTOP_CAMERA_HEIGHT = 1080;
+const DESKTOP_CAMERA_FPS = 30;
 const vtonModel = models.realtime("lucy-vton-latest");
 const regionLabels: Record<GarmentRegion, string> = {
   upper_body: "upper body garment",
@@ -393,6 +406,14 @@ function formatBytes(value: number | null) {
   return `${(value / 1024 / 1024).toFixed(2)} MB`;
 }
 
+function formatPixels(width: number | null, height: number | null) {
+  return width && height ? `${width} x ${height}` : "Not reported";
+}
+
+function formatFps(value: number | null) {
+  return value ? `${Math.round(value)} FPS` : "Not reported";
+}
+
 function createMotionReader(video: HTMLVideoElement) {
   const canvas = document.createElement("canvas");
   const width = 48;
@@ -503,6 +524,14 @@ export default function App() {
     outputWidth: null,
     outputHeight: null,
     outputFps: null,
+    inputCamera: {
+      label: null,
+      width: null,
+      height: null,
+      frameRate: null,
+      aspectRatio: null,
+      facingMode: null,
+    },
     recordingBytes: null,
     events: [],
   });
@@ -513,6 +542,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const descriptionInputRef = useRef<HTMLInputElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const lucyInputStreamRef = useRef<MediaStream | null>(null);
   const outputStreamRef = useRef<MediaStream | null>(null);
   const realtimeRef = useRef<RealTimeClient | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -602,6 +632,8 @@ export default function App() {
     stopRecording();
     realtimeRef.current?.disconnect();
     realtimeRef.current = null;
+    lucyInputStreamRef.current?.getTracks().forEach((track) => track.stop());
+    lucyInputStreamRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     outputStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
@@ -621,6 +653,8 @@ export default function App() {
     const realtime = realtimeRef.current;
     realtimeRef.current = null;
     realtime?.disconnect();
+    lucyInputStreamRef.current?.getTracks().forEach((track) => track.stop());
+    lucyInputStreamRef.current = null;
     outputStreamRef.current?.getTracks().forEach((track) => track.stop());
     outputStreamRef.current = null;
     if (outputVideoRef.current) outputVideoRef.current.srcObject = null;
@@ -696,6 +730,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       realtimeRef.current?.disconnect();
+      lucyInputStreamRef.current?.getTracks().forEach((track) => track.stop());
       localStreamRef.current?.getTracks().forEach((track) => track.stop());
       outputStreamRef.current?.getTracks().forEach((track) => track.stop());
       garmentUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
@@ -958,10 +993,10 @@ export default function App() {
       const isMobileViewport = window.matchMedia("(max-width: 760px)").matches;
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: isMobileViewport ? 720 : vtonModel.width },
-          height: { ideal: isMobileViewport ? 1280 : vtonModel.height },
-          aspectRatio: { ideal: isMobileViewport ? 9 / 16 : vtonModel.width / vtonModel.height },
-          frameRate: vtonModel.fps,
+          width: { ideal: isMobileViewport ? 720 : DESKTOP_CAMERA_WIDTH },
+          height: { ideal: isMobileViewport ? 1280 : DESKTOP_CAMERA_HEIGHT },
+          aspectRatio: { ideal: isMobileViewport ? 9 / 16 : DESKTOP_CAMERA_WIDTH / DESKTOP_CAMERA_HEIGHT },
+          frameRate: { ideal: DESKTOP_CAMERA_FPS },
           facingMode: "user",
         },
         audio: true,
@@ -970,6 +1005,21 @@ export default function App() {
       const [videoTrack] = stream.getVideoTracks();
       const videoSettings = videoTrack?.getSettings();
       setLocalFrameAspect(frameAspectFromSize(videoSettings?.width, videoSettings?.height));
+      setDiagnostics((current) => ({
+        ...current,
+        inputCamera: {
+          label: videoTrack?.label || null,
+          width: videoSettings?.width ?? null,
+          height: videoSettings?.height ?? null,
+          frameRate: videoSettings?.frameRate ?? null,
+          aspectRatio: videoSettings?.aspectRatio ?? null,
+          facingMode: videoSettings?.facingMode ?? null,
+        },
+        events: [
+          ...current.events,
+          `${new Date().toISOString()} Input camera ready: ${videoTrack?.label || "Unknown device"} (${formatPixels(videoSettings?.width ?? null, videoSettings?.height ?? null)}, ${formatFps(videoSettings?.frameRate ?? null)})`,
+        ],
+      }));
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
         await localVideoRef.current.play();
@@ -1075,7 +1125,9 @@ export default function App() {
       }));
       const temporaryApiKey = await fetchClientToken();
       const decart = createDecartClient({ apiKey: temporaryApiKey });
-      const realtime = await decart.realtime.connect(localStreamRef.current, {
+      lucyInputStreamRef.current?.getTracks().forEach((track) => track.stop());
+      lucyInputStreamRef.current = localStreamRef.current.clone();
+      const realtime = await decart.realtime.connect(lucyInputStreamRef.current, {
         model: vtonModel,
         mirror: "auto",
         resolution: outputResolution,
@@ -1367,6 +1419,13 @@ export default function App() {
       `Latest Lucy set/connect latency: ${formatMilliseconds(diagnostics.lastApplySetLatencyMs)}`,
       `Selected garment: ${selectedGarment?.name ?? "None"}`,
       `Enhance prompt: ${enhance ? "On" : "Off"}`,
+      "",
+      "Input Camera",
+      `Camera device: ${diagnostics.inputCamera.label ?? "Not reported"}`,
+      `Input camera pixels: ${formatPixels(diagnostics.inputCamera.width, diagnostics.inputCamera.height)}`,
+      `Input camera FPS: ${formatFps(diagnostics.inputCamera.frameRate)}`,
+      `Input camera aspect ratio: ${diagnostics.inputCamera.aspectRatio ? diagnostics.inputCamera.aspectRatio.toFixed(3) : "Not reported"}`,
+      `Input camera facing mode: ${diagnostics.inputCamera.facingMode ?? "Not reported"}`,
       "",
       "Motion Latency",
       `Latest motion latency: ${formatMilliseconds(diagnostics.lastMotionLatencyMs)}`,
@@ -1676,7 +1735,7 @@ export default function App() {
           <label className="toggle-row gesture-toggle">
             <span>
               <strong>Hand gestures</strong>
-              <small>Swipe, open palm, or thumbs up</small>
+              <small>Raise left/right hand, open palm, or thumbs up</small>
             </span>
             <input type="checkbox" checked={gestureEnabled} onChange={(event) => setGestureEnabled(event.target.checked)} />
             <span className="toggle" aria-hidden="true"><span /></span>

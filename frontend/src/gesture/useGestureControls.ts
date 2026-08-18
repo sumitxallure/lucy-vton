@@ -11,6 +11,7 @@ type UseGestureControlsOptions = {
 };
 
 const FRAME_INTERVAL_MS = 90;
+const DEBUG_LOG_INTERVAL_MS = 500;
 
 export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureControlsOptions) {
   const [modelStatus, setModelStatus] = useState<GestureModelStatus>(enabled ? "loading" : "disabled");
@@ -28,12 +29,15 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
       return undefined;
     }
 
-    const worker = new Worker(new URL("./gestureWorker.ts", import.meta.url), { type: "module" });
+    const worker = new Worker("/gesture-worker.js");
     const interpreter = new GestureInterpreter();
     let stopped = false;
     let ready = false;
     let frameInFlight = false;
     let timer: number | null = null;
+    let framesSent = 0;
+    let resultsReceived = 0;
+    let lastLogAt = 0;
 
     const scheduleFrame = () => {
       if (stopped || timer !== null) return;
@@ -52,10 +56,22 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
 
       frameInFlight = true;
       try {
-        const bitmap = await createImageBitmap(video);
-        const request: GestureWorkerRequest = { type: "frame", bitmap, timestamp: performance.now() };
-        worker.postMessage(request, [bitmap]);
-      } catch {
+        const [gestureBitmap, poseBitmap] = await Promise.all([
+          createImageBitmap(video),
+          createImageBitmap(video),
+        ]);
+        const request: GestureWorkerRequest = { type: "frame", gestureBitmap, poseBitmap, timestamp: performance.now() };
+        framesSent += 1;
+        if (framesSent === 1) {
+          console.info("[gesture] first frame sent", {
+            videoWidth: video.videoWidth,
+            videoHeight: video.videoHeight,
+            readyState: video.readyState,
+          });
+        }
+        worker.postMessage(request, [gestureBitmap, poseBitmap]);
+      } catch (error) {
+        console.warn("[gesture] failed to create/send frame", error);
         frameInFlight = false;
         scheduleFrame();
       }
@@ -65,6 +81,7 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
       const response = event.data;
       if (response.type === "ready") {
         ready = true;
+        console.info("[gesture] worker ready");
         setModelStatus("ready");
         setDetectedGesture("Ready for a gesture");
         scheduleFrame();
@@ -72,17 +89,38 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
       }
       if (response.type === "error") {
         frameInFlight = false;
+        console.error("[gesture] worker error", response.message);
         setModelStatus("error");
         setDetectedGesture(response.message);
         return;
       }
 
       frameInFlight = false;
+      resultsReceived += 1;
+      const now = performance.now();
+      if (now - lastLogAt >= DEBUG_LOG_INTERVAL_MS || response.gesture !== "None") {
+        lastLogAt = now;
+        console.info("[gesture] result", {
+          gesture: response.gesture,
+          gestureSource: response.gestureSource,
+          extendedFingerCount: response.extendedFingerCount,
+          confidence: Number(response.confidence.toFixed(3)),
+          pose: response.pose,
+          poseConfidence: Number(response.poseConfidence.toFixed(3)),
+          x: response.x === null ? null : Number(response.x.toFixed(3)),
+          framesSent,
+          resultsReceived,
+        });
+      }
       const readableGesture = response.gesture === "Open_Palm"
         ? "Open palm"
         : response.gesture === "Thumb_Up"
           ? "Thumbs up"
-          : "No hand detected";
+          : response.pose === "Left_Hand_Raised"
+            ? "Left hand raised"
+            : response.pose === "Right_Hand_Raised"
+              ? "Right hand raised"
+              : "No gesture detected";
       setDetectedGesture(readableGesture);
 
       // The local preview is mirrored, so use mirrored coordinates for intuitive swipes.
@@ -90,16 +128,21 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
         ...response,
         x: response.x === null ? null : 1 - response.x,
       });
-      if (command) commandRef.current(command);
+      if (command) {
+        console.info("[gesture] command", command);
+        commandRef.current(command);
+      }
       scheduleFrame();
     };
 
     worker.onerror = (event) => {
       frameInFlight = false;
+      console.error("[gesture] worker onerror", event.message || event);
       setModelStatus("error");
       setDetectedGesture(event.message || "Gesture recognition failed to load.");
     };
 
+    console.info("[gesture] starting worker");
     setModelStatus("loading");
     setDetectedGesture("Loading gesture recognition");
     const initializeRequest: GestureWorkerRequest = { type: "initialize" };
@@ -107,6 +150,7 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
 
     return () => {
       stopped = true;
+      console.info("[gesture] stopping worker", { framesSent, resultsReceived });
       if (timer !== null) window.clearTimeout(timer);
       interpreter.reset();
       worker.terminate();
