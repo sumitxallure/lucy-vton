@@ -1735,7 +1735,7 @@ export default function App() {
           <label className="toggle-row gesture-toggle">
             <span>
               <strong>Hand gestures</strong>
-              <small>Raise left/right hand, open palm, or thumbs up</small>
+              <small>Raise left/right hand, open palm, or hands on waist/lower belly</small>
             </span>
             <input type="checkbox" checked={gestureEnabled} onChange={(event) => setGestureEnabled(event.target.checked)} />
             <span className="toggle" aria-hidden="true"><span /></span>

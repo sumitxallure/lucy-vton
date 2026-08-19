@@ -1,5 +1,5 @@
-export type RecognizedGesture = "None" | "Open_Palm" | "Thumb_Up";
-export type RecognizedPose = "None" | "Left_Hand_Raised" | "Right_Hand_Raised";
+export type RecognizedGesture = "None" | "Open_Palm";
+export type RecognizedPose = "None" | "Left_Hand_Raised" | "Right_Hand_Raised" | "Both_Hands_On_Waist";
 export type GestureSource = "none" | "canned" | "landmarks";
 
 export type GestureCommand =

@@ -45,7 +45,7 @@ async function initialize() {
       minHandPresenceConfidence: 0.6,
       minTrackingConfidence: 0.6,
       cannedGesturesClassifierOptions: {
-        categoryAllowlist: ["Open_Palm", "Thumb_Up"],
+        categoryAllowlist: ["Open_Palm"],
         scoreThreshold: 0.3,
       },
     });
@@ -83,16 +83,16 @@ function recognize(gestureBitmap, poseBitmap, timestamp) {
       : null;
     const landmarkPalm = getLandmarkOpenPalm(result.worldLandmarks[0] || landmarks);
     const recognizedGesture = resolveGesture(category, landmarkPalm);
-    const raisedHand = getRaisedHand(poseResult.landmarks[0]);
+    const pose = getPoseCommand(poseResult.landmarks[0]);
 
     post({
       type: "result",
       gesture: recognizedGesture.gesture,
       gestureSource: recognizedGesture.source,
       extendedFingerCount: landmarkPalm.extendedFingerCount,
-      pose: raisedHand.pose,
+      pose: pose.pose,
       confidence: recognizedGesture.confidence,
-      poseConfidence: raisedHand.confidence,
+      poseConfidence: pose.confidence,
       x: palmX,
       timestamp,
     });
@@ -103,10 +103,6 @@ function recognize(gestureBitmap, poseBitmap, timestamp) {
 }
 
 function resolveGesture(category, landmarkPalm) {
-  if (category?.categoryName === "Thumb_Up") {
-    return { gesture: "Thumb_Up", confidence: category.score ?? 0, source: "canned" };
-  }
-
   if (category?.categoryName === "Open_Palm") {
     if (landmarkPalm.isOpen && landmarkPalm.confidence > (category.score ?? 0)) {
       return { gesture: "Open_Palm", confidence: landmarkPalm.confidence, source: "landmarks" };
@@ -119,6 +115,18 @@ function resolveGesture(category, landmarkPalm) {
   }
 
   return { gesture: "None", confidence: category?.score ?? 0, source: "none" };
+}
+
+function getPoseCommand(landmarks) {
+  const raisedHand = getRaisedHand(landmarks);
+  if (raisedHand.pose !== "None") return raisedHand;
+
+  const waistPose = getHandsOnWaist(landmarks);
+  if (waistPose.confidence >= 0.55) {
+    return { pose: "Both_Hands_On_Waist", confidence: waistPose.confidence };
+  }
+
+  return { pose: "None", confidence: Math.max(raisedHand.confidence, waistPose.confidence) };
 }
 
 function getLandmarkOpenPalm(landmarks) {
@@ -179,6 +187,14 @@ function distance(a, b) {
   });
 }
 
+function distance2d(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
 function vectorLength(vector) {
   return Math.hypot(vector.x, vector.y, vector.z);
 }
@@ -203,6 +219,55 @@ function getRaisedHand(landmarks) {
   if (rightScore >= leftScore + 0.08) return { pose: "Right_Hand_Raised", confidence: rightScore };
 
   return { pose: "None", confidence: Math.max(leftScore, rightScore) };
+}
+
+function getHandsOnWaist(landmarks) {
+  if (!landmarks) return { confidence: 0 };
+
+  const leftShoulder = landmarks[11];
+  const rightShoulder = landmarks[12];
+  const leftElbow = landmarks[13];
+  const rightElbow = landmarks[14];
+  const leftWrist = landmarks[15];
+  const rightWrist = landmarks[16];
+  const leftHip = landmarks[23];
+  const rightHip = landmarks[24];
+  const required = [leftShoulder, rightShoulder, leftElbow, rightElbow, leftWrist, rightWrist, leftHip, rightHip];
+  if (required.some((point) => !point || (point.visibility ?? 0) < 0.35)) return { confidence: 0 };
+
+  const shoulderWidth = Math.max(distance2d(leftShoulder, rightShoulder), 0.08);
+  const torsoHeight = Math.max(((leftHip.y + rightHip.y) / 2) - ((leftShoulder.y + rightShoulder.y) / 2), 0.12);
+  const midX = (leftHip.x + rightHip.x) / 2;
+  const leftScore = scoreHandOnWaistSide(leftWrist, leftElbow, leftShoulder, leftHip, midX, shoulderWidth, torsoHeight);
+  const rightScore = scoreHandOnWaistSide(rightWrist, rightElbow, rightShoulder, rightHip, midX, shoulderWidth, torsoHeight);
+  const bothScore = Math.min(leftScore, rightScore);
+  const balancePenalty = Math.abs(leftScore - rightScore) * 0.25;
+
+  return { confidence: Math.max(0, Math.min(1, bothScore - balancePenalty)) };
+}
+
+function scoreHandOnWaistSide(wrist, elbow, shoulder, hip, midX, shoulderWidth, torsoHeight) {
+  const wristVisibility = wrist.visibility ?? 0;
+  const elbowVisibility = elbow.visibility ?? 0;
+  const hipVisibility = hip.visibility ?? 0;
+  if (wristVisibility < 0.35 || elbowVisibility < 0.35 || hipVisibility < 0.35) return 0;
+
+  const waistTargetX = hip.x * 0.65 + midX * 0.35;
+  const waistTargetY = shoulder.y + torsoHeight * 0.68;
+  const dx = Math.abs(wrist.x - waistTargetX);
+  const dy = Math.abs(wrist.y - waistTargetY);
+  const wristNearWaist = 1 - clamp01((dx / (shoulderWidth * 0.78) + dy / (torsoHeight * 0.52)) / 2);
+  const wristInWaistBand = wrist.y > shoulder.y + torsoHeight * 0.34 && wrist.y < hip.y + torsoHeight * 0.16;
+  const elbowOutsideWrist = Math.abs(elbow.x - midX) > Math.abs(wrist.x - midX) + shoulderWidth * 0.05;
+  const elbowInUpperTorso = elbow.y > shoulder.y + torsoHeight * 0.1 && elbow.y < hip.y + torsoHeight * 0.18 ? 1 : 0;
+  const elbowAngle = jointAngle(shoulder, elbow, wrist);
+  const elbowBent = elbowAngle >= 45 && elbowAngle <= 145;
+  const visibilityScore = Math.min(wristVisibility, elbowVisibility, hipVisibility);
+  if (wristNearWaist < 0.42 || !wristInWaistBand || !elbowBent) return 0;
+
+  const elbowBendScore = 1 - clamp01(Math.abs(elbowAngle - 95) / 55);
+  const elbowIntentScore = elbowOutsideWrist ? 0.14 : 0.04;
+  return Math.min(1, wristNearWaist * 0.46 + 0.2 + elbowIntentScore + elbowBendScore * 0.12 + elbowInUpperTorso * 0.03 + visibilityScore * 0.05);
 }
 
 function scoreRaisedHand(wrist, shoulder) {

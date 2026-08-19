@@ -114,12 +114,12 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
       }
       const readableGesture = response.gesture === "Open_Palm"
         ? "Open palm"
-        : response.gesture === "Thumb_Up"
-          ? "Thumbs up"
-          : response.pose === "Left_Hand_Raised"
-            ? "Left hand raised"
-            : response.pose === "Right_Hand_Raised"
-              ? "Right hand raised"
+        : response.pose === "Left_Hand_Raised"
+          ? "Left hand raised"
+          : response.pose === "Right_Hand_Raised"
+            ? "Right hand raised"
+            : response.pose === "Both_Hands_On_Waist"
+              ? "Hands on waist"
               : "No gesture detected";
       setDetectedGesture(readableGesture);
 

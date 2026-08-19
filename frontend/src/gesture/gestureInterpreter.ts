@@ -1,17 +1,16 @@
 import type { GestureCommand, GestureSample } from "./gestureTypes";
 
 const MIN_CONFIDENCE = 0.55;
-const THUMBS_UP_MIN_CONFIDENCE = 0.45;
 const MIN_POSE_CONFIDENCE = 0.55;
 const OPEN_PALM_HOLD_MS = 850;
-const THUMBS_UP_HOLD_MS = 900;
+const WAIST_CAPTURE_HOLD_MS = 1000;
 const RAISED_HAND_HOLD_MS = 650;
 const CANDIDATE_GRACE_MS = 650;
 const RELEASE_MS = 850;
 const COMMAND_COOLDOWN_MS = 2600;
 
 export class GestureInterpreter {
-  private candidate: "open-palm" | "thumbs-up" | "left-hand-raised" | "right-hand-raised" | null = null;
+  private candidate: "open-palm" | "waist-capture" | "left-hand-raised" | "right-hand-raised" | null = null;
   private candidateStartedAt = 0;
   private candidateLastSeenAt = 0;
   private awaitingRelease = false;
@@ -29,8 +28,7 @@ export class GestureInterpreter {
 
   push(sample: GestureSample): GestureCommand | null {
     const hasGesture = (
-      (sample.gesture === "Thumb_Up" && sample.confidence >= THUMBS_UP_MIN_CONFIDENCE)
-      || (sample.gesture === "Open_Palm" && sample.confidence >= MIN_CONFIDENCE)
+      sample.gesture === "Open_Palm" && sample.confidence >= MIN_CONFIDENCE
     );
     const hasPose = sample.pose !== "None" && sample.poseConfidence >= MIN_POSE_CONFIDENCE;
 
@@ -74,10 +72,10 @@ export class GestureInterpreter {
       return null;
     }
 
-    if (sample.gesture === "Thumb_Up" && sample.confidence >= THUMBS_UP_MIN_CONFIDENCE) {
-      if (this.candidate !== "thumbs-up") this.beginCandidate("thumbs-up", sample);
+    if (sample.pose === "Both_Hands_On_Waist" && sample.poseConfidence >= MIN_POSE_CONFIDENCE) {
+      if (this.candidate !== "waist-capture") this.beginCandidate("waist-capture", sample);
       else this.candidateLastSeenAt = sample.timestamp;
-      if (sample.timestamp - this.candidateStartedAt >= THUMBS_UP_HOLD_MS) {
+      if (sample.timestamp - this.candidateStartedAt >= WAIST_CAPTURE_HOLD_MS) {
         return this.complete("capture-look", sample.timestamp);
       }
       return null;
@@ -103,7 +101,7 @@ export class GestureInterpreter {
     return null;
   }
 
-  private beginCandidate(candidate: "open-palm" | "thumbs-up" | "left-hand-raised" | "right-hand-raised", sample: GestureSample) {
+  private beginCandidate(candidate: "open-palm" | "waist-capture" | "left-hand-raised" | "right-hand-raised", sample: GestureSample) {
     this.candidate = candidate;
     this.candidateStartedAt = sample.timestamp;
     this.candidateLastSeenAt = sample.timestamp;
