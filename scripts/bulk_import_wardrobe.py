@@ -17,6 +17,7 @@ REGION_BY_WORN_AREA = {
     "full body": "outfit",
     "full outfit": "outfit",
     "outfit": "outfit",
+    "upper body and lower body": "outfit",
     "footwear": "footwear",
     "shoes": "footwear",
     "hat or headwear": "hat",
@@ -315,8 +316,21 @@ def score_match(entry, image_path):
     return score
 
 
-def match_entries(entries, image_dir):
-    images = sorted([path for path in image_dir.iterdir() if path.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]])
+def collect_images(image_dirs):
+    images = []
+    seen = set()
+    for image_dir in image_dirs:
+        for path in sorted([path for path in image_dir.iterdir() if path.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]]):
+            key = str(path.resolve()).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            images.append(path)
+    return images
+
+
+def match_entries(entries, image_dirs):
+    images = collect_images(image_dirs)
     image_by_name = {image.name: image for image in images}
     rows = []
     used = set()
@@ -373,20 +387,21 @@ def post_multipart(url, image_path, raw_description, description, prompt):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Bulk import Lucy wardrobe garments from a PDF and image folder.")
+    parser = argparse.ArgumentParser(description="Bulk import Lucy wardrobe garments from a PDF and one or more image folders.")
     parser.add_argument("--pdf", required=True)
-    parser.add_argument("--images", required=True)
+    parser.add_argument("--images", required=True, nargs="+")
     parser.add_argument("--review-csv", default="bulk-wardrobe-review.csv")
     parser.add_argument("--api-base", default="http://localhost:3001")
     parser.add_argument("--upload", action="store_true")
     args = parser.parse_args()
 
     entries = extract_entries(Path(args.pdf))
-    rows = match_entries(entries, Path(args.images))
+    image_dirs = [Path(path) for path in args.images]
+    rows = match_entries(entries, image_dirs)
     review_path = Path(args.review_csv)
     review_path.parent.mkdir(parents=True, exist_ok=True)
     with review_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["status", "confidence", "garment_name", "worn_area", "matched_image"])
+        writer = csv.DictWriter(handle, fieldnames=["status", "confidence", "garment_name", "worn_area", "matched_folder", "matched_image"])
         writer.writeheader()
         for row in rows:
             writer.writerow({
@@ -394,6 +409,7 @@ def main():
                 "confidence": row["confidence"],
                 "garment_name": row["entry"]["fields"].get("Garment Name", ""),
                 "worn_area": row["entry"]["fields"].get("Worn Area", ""),
+                "matched_folder": row["image"].parent.name,
                 "matched_image": str(row["image"]),
             })
 
