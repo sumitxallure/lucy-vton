@@ -518,6 +518,9 @@ export default function App() {
   const isApplyingRef = useRef(false);
   const queuedGarmentRef = useRef<Garment | null>(null);
   const outputFrameStatsRef = useRef({ lastCount: 0, lastTime: 0 });
+  const garmentsRef = useRef<Garment[]>([]);
+  const preloadingIdsRef = useRef(new Set<string>());
+  const isPreloadingWardrobeRef = useRef(false);
 
   const generatedPrompt = selectedGarment?.description ? generateVtonPrompt(selectedGarment.description) : "";
 
@@ -606,7 +609,7 @@ export default function App() {
     setMessage(garments.length ? "Camera stopped. Ready when you are." : "Add one or more garment images to begin.");
   }, [garments.length, stopRecording]);
 
-  const ensureGarmentFile = async (garment: Garment) => {
+  const ensureGarmentFile = useCallback(async (garment: Garment) => {
     if (garment.file) return garment;
     if (!garment.imageUrl) throw new Error(`Could not load image for ${garment.name}.`);
 
@@ -622,7 +625,51 @@ export default function App() {
     setGarments((current) => current.map((item) => (item.id === garment.id ? updated : item)));
     setSelectedGarment((current) => (current?.id === garment.id ? updated : current));
     return updated;
-  };
+  }, []);
+
+  const preloadWardrobeFiles = useCallback(async (priorityId?: string | null) => {
+    if (isPreloadingWardrobeRef.current) return;
+    isPreloadingWardrobeRef.current = true;
+    try {
+      while (true) {
+        const currentGarments = garmentsRef.current;
+        const orderedGarments = [
+          ...currentGarments.filter((garment) => garment.id === priorityId),
+          ...currentGarments.filter((garment) => garment.id !== priorityId),
+        ];
+        const nextGarment = orderedGarments.find((garment) => (
+          !garment.file
+          && garment.imageUrl
+          && !preloadingIdsRef.current.has(garment.id)
+        ));
+        if (!nextGarment) return;
+
+        preloadingIdsRef.current.add(nextGarment.id);
+        const startedAt = performance.now();
+        try {
+          const readyGarment = await ensureGarmentFile(nextGarment);
+          const elapsed = Math.round(performance.now() - startedAt);
+          setDiagnostics((current) => ({
+            ...current,
+            events: [
+              ...current.events,
+              `${new Date().toISOString()} Preloaded ${readyGarment.name} in ${elapsed} ms`,
+            ],
+          }));
+        } catch (error) {
+          setDiagnostics((current) => ({
+            ...current,
+            events: [
+              ...current.events,
+              `${new Date().toISOString()} Preload failed for ${nextGarment.name}: ${readableError(error)}`,
+            ],
+          }));
+        }
+      }
+    } finally {
+      isPreloadingWardrobeRef.current = false;
+    }
+  }, [ensureGarmentFile]);
 
   useEffect(() => {
     return () => {
@@ -639,6 +686,10 @@ export default function App() {
     const timer = window.setInterval(() => setClockNow(performance.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    garmentsRef.current = garments;
+  }, [garments]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -686,6 +737,11 @@ export default function App() {
       cancelled = true;
     };
   }, [rememberPreviewUrl]);
+
+  useEffect(() => {
+    if (!garments.length || isWardrobeLoading) return;
+    void preloadWardrobeFiles(selectedId);
+  }, [garments.length, isWardrobeLoading, preloadWardrobeFiles, selectedId]);
 
   useEffect(() => {
     if (status !== "live" || !localVideoRef.current || !outputVideoRef.current) return undefined;
