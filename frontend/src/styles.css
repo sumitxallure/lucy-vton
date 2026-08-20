@@ -119,6 +119,14 @@ textarea[readonly] { color: #cbd4d0; background: #101513; }
 .toggle span { display: block; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform .2s; }
 .toggle-row input:checked + .toggle { background: var(--mint); }
 .toggle-row input:checked + .toggle span { transform: translateX(16px); background: #10251e; }
+.gesture-toggle { margin-bottom: 10px; }
+.gesture-status { min-height: 52px; display: flex; align-items: center; gap: 9px; margin-bottom: 18px; padding: 9px; border: 1px solid var(--border); border-radius: 6px; background: #171a1d; color: var(--muted); }
+.gesture-status.ready { border-color: #285342; background: #14231d; color: var(--mint); }
+.gesture-status.error { border-color: #63343a; background: #29191b; color: var(--danger); }
+.gesture-status > svg { flex: 0 0 auto; }
+.gesture-status > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.gesture-status strong { color: #e5e8e7; font-size: 10px; }
+.gesture-status span { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .full-width { width: 100%; }
 .session-info { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
 .session-info h3 { margin-bottom: 12px; }

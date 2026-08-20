@@ -5,6 +5,7 @@ import {
   CircleStop,
   Download,
   FileText,
+  Hand,
   LoaderCircle,
   Mic,
   Plus,
@@ -18,6 +19,8 @@ import {
 } from "lucide-react";
 import { createDecartClient, models, type RealTimeClient } from "@decartai/sdk";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useGestureControls } from "./gesture/useGestureControls";
+import type { GestureCommand } from "./gesture/gestureTypes";
 
 type Garment = {
   id: string;
@@ -50,6 +53,15 @@ type AppStatus = "idle" | "camera" | "connecting" | "live" | "error";
 type OutputResolution = "720p" | "1080p";
 type VideoFrameAspect = "empty" | "portrait" | "landscape";
 
+type CameraInputDiagnostics = {
+  label: string | null;
+  width: number | null;
+  height: number | null;
+  frameRate: number | null;
+  aspectRatio: number | null;
+  facingMode: string | null;
+};
+
 type SessionDiagnostics = {
   sessionStartedAt: number | null;
   connectedAt: number | null;
@@ -62,6 +74,7 @@ type SessionDiagnostics = {
   outputWidth: number | null;
   outputHeight: number | null;
   outputFps: number | null;
+  inputCamera: CameraInputDiagnostics;
   recordingBytes: number | null;
   events: string[];
 };
@@ -99,6 +112,9 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001
 const GARMENT_IMAGE_MAX_SIDE = 1280;
 const GARMENT_IMAGE_QUALITY = 0.9;
 const VTON_PROMPT_MAX_WORDS = 75;
+const DESKTOP_CAMERA_WIDTH = 1920;
+const DESKTOP_CAMERA_HEIGHT = 1080;
+const DESKTOP_CAMERA_FPS = 30;
 const vtonModel = models.realtime("lucy-vton-latest");
 const regionLabels: Record<GarmentRegion, string> = {
   upper_body: "upper body garment",
@@ -390,6 +406,14 @@ function formatBytes(value: number | null) {
   return `${(value / 1024 / 1024).toFixed(2)} MB`;
 }
 
+function formatPixels(width: number | null, height: number | null) {
+  return width && height ? `${width} x ${height}` : "Not reported";
+}
+
+function formatFps(value: number | null) {
+  return value ? `${Math.round(value)} FPS` : "Not reported";
+}
+
 function createMotionReader(video: HTMLVideoElement) {
   const canvas = document.createElement("canvas");
   const width = 48;
@@ -477,12 +501,15 @@ export default function App() {
   const [message, setMessage] = useState("Add one or more garment images to begin.");
   const [isRecording, setIsRecording] = useState(false);
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
+  const [capturedLookUrl, setCapturedLookUrl] = useState<string | null>(null);
+  const [capturedLookFileName, setCapturedLookFileName] = useState<string | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isApplying, setIsApplying] = useState(false);
   const [isWardrobeLoading, setIsWardrobeLoading] = useState(true);
   const [isWardrobeSaving, setIsWardrobeSaving] = useState(false);
   const [isOutputStreamAttached, setIsOutputStreamAttached] = useState(false);
   const [isOutputVideoReady, setIsOutputVideoReady] = useState(false);
+  const [gestureEnabled, setGestureEnabled] = useState(true);
   const [localFrameAspect, setLocalFrameAspect] = useState<VideoFrameAspect>("empty");
   const [outputFrameAspect, setOutputFrameAspect] = useState<VideoFrameAspect>("empty");
   const [diagnostics, setDiagnostics] = useState<SessionDiagnostics>({
@@ -497,6 +524,14 @@ export default function App() {
     outputWidth: null,
     outputHeight: null,
     outputFps: null,
+    inputCamera: {
+      label: null,
+      width: null,
+      height: null,
+      frameRate: null,
+      aspectRatio: null,
+      facingMode: null,
+    },
     recordingBytes: null,
     events: [],
   });
@@ -507,6 +542,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const descriptionInputRef = useRef<HTMLInputElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const lucyInputStreamRef = useRef<MediaStream | null>(null);
   const outputStreamRef = useRef<MediaStream | null>(null);
   const realtimeRef = useRef<RealTimeClient | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -514,6 +550,7 @@ export default function App() {
   const recordingTimerRef = useRef<number | null>(null);
   const garmentUrlsRef = useRef(new Set<string>());
   const recordingUrlRef = useRef<string | null>(null);
+  const capturedLookUrlRef = useRef<string | null>(null);
   const applyStartedAtRef = useRef<number | null>(null);
   const isApplyingRef = useRef(false);
   const queuedGarmentRef = useRef<Garment | null>(null);
@@ -595,6 +632,8 @@ export default function App() {
     stopRecording();
     realtimeRef.current?.disconnect();
     realtimeRef.current = null;
+    lucyInputStreamRef.current?.getTracks().forEach((track) => track.stop());
+    lucyInputStreamRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     outputStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
@@ -608,6 +647,23 @@ export default function App() {
     setStatus("idle");
     setMessage(garments.length ? "Camera stopped. Ready when you are." : "Add one or more garment images to begin.");
   }, [garments.length, stopRecording]);
+
+  const stopLiveTryOn = useCallback(() => {
+    stopRecording();
+    const realtime = realtimeRef.current;
+    realtimeRef.current = null;
+    realtime?.disconnect();
+    lucyInputStreamRef.current?.getTracks().forEach((track) => track.stop());
+    lucyInputStreamRef.current = null;
+    outputStreamRef.current?.getTracks().forEach((track) => track.stop());
+    outputStreamRef.current = null;
+    if (outputVideoRef.current) outputVideoRef.current.srcObject = null;
+    setIsOutputStreamAttached(false);
+    setIsOutputVideoReady(false);
+    setOutputFrameAspect("empty");
+    setStatus(localStreamRef.current ? "camera" : "idle");
+    setMessage("Live try-on stopped. Your camera and gesture controls remain active.");
+  }, [stopRecording]);
 
   const ensureGarmentFile = useCallback(async (garment: Garment) => {
     if (garment.file) return garment;
@@ -674,10 +730,12 @@ export default function App() {
   useEffect(() => {
     return () => {
       realtimeRef.current?.disconnect();
+      lucyInputStreamRef.current?.getTracks().forEach((track) => track.stop());
       localStreamRef.current?.getTracks().forEach((track) => track.stop());
       outputStreamRef.current?.getTracks().forEach((track) => track.stop());
       garmentUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+      if (capturedLookUrlRef.current) URL.revokeObjectURL(capturedLookUrlRef.current);
       clearRecordingTimer();
     };
   }, [clearRecordingTimer]);
@@ -935,10 +993,10 @@ export default function App() {
       const isMobileViewport = window.matchMedia("(max-width: 760px)").matches;
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: isMobileViewport ? 720 : vtonModel.width },
-          height: { ideal: isMobileViewport ? 1280 : vtonModel.height },
-          aspectRatio: { ideal: isMobileViewport ? 9 / 16 : vtonModel.width / vtonModel.height },
-          frameRate: vtonModel.fps,
+          width: { ideal: isMobileViewport ? 720 : DESKTOP_CAMERA_WIDTH },
+          height: { ideal: isMobileViewport ? 1280 : DESKTOP_CAMERA_HEIGHT },
+          aspectRatio: { ideal: isMobileViewport ? 9 / 16 : DESKTOP_CAMERA_WIDTH / DESKTOP_CAMERA_HEIGHT },
+          frameRate: { ideal: DESKTOP_CAMERA_FPS },
           facingMode: "user",
         },
         audio: true,
@@ -947,6 +1005,21 @@ export default function App() {
       const [videoTrack] = stream.getVideoTracks();
       const videoSettings = videoTrack?.getSettings();
       setLocalFrameAspect(frameAspectFromSize(videoSettings?.width, videoSettings?.height));
+      setDiagnostics((current) => ({
+        ...current,
+        inputCamera: {
+          label: videoTrack?.label || null,
+          width: videoSettings?.width ?? null,
+          height: videoSettings?.height ?? null,
+          frameRate: videoSettings?.frameRate ?? null,
+          aspectRatio: videoSettings?.aspectRatio ?? null,
+          facingMode: videoSettings?.facingMode ?? null,
+        },
+        events: [
+          ...current.events,
+          `${new Date().toISOString()} Input camera ready: ${videoTrack?.label || "Unknown device"} (${formatPixels(videoSettings?.width ?? null, videoSettings?.height ?? null)}, ${formatFps(videoSettings?.frameRate ?? null)})`,
+        ],
+      }));
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
         await localVideoRef.current.play();
@@ -1052,7 +1125,9 @@ export default function App() {
       }));
       const temporaryApiKey = await fetchClientToken();
       const decart = createDecartClient({ apiKey: temporaryApiKey });
-      const realtime = await decart.realtime.connect(localStreamRef.current, {
+      lucyInputStreamRef.current?.getTracks().forEach((track) => track.stop());
+      lucyInputStreamRef.current = localStreamRef.current.clone();
+      const realtime = await decart.realtime.connect(lucyInputStreamRef.current, {
         model: vtonModel,
         mirror: "auto",
         resolution: outputResolution,
@@ -1155,6 +1230,23 @@ export default function App() {
     }
   };
 
+  const selectAdjacentGarment = (direction: "next" | "previous") => {
+    const availableGarments = garmentsRef.current.filter((garment) => garment.description);
+    if (!availableGarments.length) {
+      setMessage("Add a garment with a description before using swipe controls.");
+      return;
+    }
+
+    const currentIndex = availableGarments.findIndex((garment) => garment.id === selectedId);
+    const step = direction === "next" ? 1 : -1;
+    const nextIndex = currentIndex < 0
+      ? 0
+      : (currentIndex + step + availableGarments.length) % availableGarments.length;
+    const nextGarment = availableGarments[nextIndex];
+    selectGarment(nextGarment);
+    setMessage(`${direction === "next" ? "Next" : "Previous"} garment: ${nextGarment.name}.`);
+  };
+
   const removeGarment = async (garment: Garment) => {
     if (garment.storageId) {
       try {
@@ -1225,6 +1317,83 @@ export default function App() {
     anchor.click();
   };
 
+  const captureCurrentLook = async () => {
+    const video = outputVideoRef.current;
+    if (!video || !isOutputVideoReady || !video.videoWidth || !video.videoHeight) {
+      setMessage("Wait for the Lucy output before capturing a look.");
+      return;
+    }
+
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Could not prepare the image capture.");
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((result) => {
+          if (result) resolve(result);
+          else reject(new Error("Could not capture the current look."));
+        }, "image/png");
+      });
+      const url = URL.createObjectURL(blob);
+      if (capturedLookUrlRef.current) URL.revokeObjectURL(capturedLookUrlRef.current);
+      const fileName = `lucy-look-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+      capturedLookUrlRef.current = url;
+      setCapturedLookUrl(url);
+      setCapturedLookFileName(fileName);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      anchor.click();
+      setMessage("Current Lucy look captured. Use Download photo if the browser did not save it automatically.");
+    } catch (error) {
+      setMessage(readableError(error));
+    }
+  };
+
+  const downloadCapturedLook = () => {
+    if (!capturedLookUrl || !capturedLookFileName) return;
+    const anchor = document.createElement("a");
+    anchor.href = capturedLookUrl;
+    anchor.download = capturedLookFileName;
+    anchor.click();
+  };
+
+  const handleGestureCommand = (command: GestureCommand) => {
+    if (isApplyingRef.current || status === "connecting") {
+      setMessage("Please wait for the current Lucy update to finish.");
+      return;
+    }
+
+    if (command === "next-garment") {
+      selectAdjacentGarment("next");
+      return;
+    }
+    if (command === "previous-garment") {
+      selectAdjacentGarment("previous");
+      return;
+    }
+    if (command === "capture-look") {
+      void captureCurrentLook();
+      return;
+    }
+
+    if (realtimeRef.current?.isConnected() || status === "live") {
+      stopLiveTryOn();
+    } else {
+      void applyGarment();
+    }
+  };
+
+  const gestureActive = gestureEnabled && Boolean(localStreamRef.current);
+  const { modelStatus: gestureModelStatus, detectedGesture } = useGestureControls({
+    enabled: gestureActive,
+    videoRef: localVideoRef,
+    onCommand: handleGestureCommand,
+  });
+
   const downloadTestReport = () => {
     const now = performance.now();
     const startedAt = diagnostics.sessionStartedAt ? new Date(Date.now() - (now - diagnostics.sessionStartedAt)).toISOString() : "Not started";
@@ -1250,6 +1419,13 @@ export default function App() {
       `Latest Lucy set/connect latency: ${formatMilliseconds(diagnostics.lastApplySetLatencyMs)}`,
       `Selected garment: ${selectedGarment?.name ?? "None"}`,
       `Enhance prompt: ${enhance ? "On" : "Off"}`,
+      "",
+      "Input Camera",
+      `Camera device: ${diagnostics.inputCamera.label ?? "Not reported"}`,
+      `Input camera pixels: ${formatPixels(diagnostics.inputCamera.width, diagnostics.inputCamera.height)}`,
+      `Input camera FPS: ${formatFps(diagnostics.inputCamera.frameRate)}`,
+      `Input camera aspect ratio: ${diagnostics.inputCamera.aspectRatio ? diagnostics.inputCamera.aspectRatio.toFixed(3) : "Not reported"}`,
+      `Input camera facing mode: ${diagnostics.inputCamera.facingMode ?? "Not reported"}`,
       "",
       "Motion Latency",
       `Latest motion latency: ${formatMilliseconds(diagnostics.lastMotionLatencyMs)}`,
@@ -1462,13 +1638,20 @@ export default function App() {
             )}
 
             <button
-              className="primary-button accent"
+              className={`primary-button ${status === "live" ? "" : "accent"}`}
               type="button"
-              disabled={!localStreamRef.current || !selectedGarment?.description || isApplying}
-              onClick={() => void applyGarment()}
+              disabled={status === "connecting" || isApplying || (status !== "live" && (!localStreamRef.current || !selectedGarment?.description))}
+              onClick={() => {
+                if (status === "live") stopLiveTryOn();
+                else void applyGarment();
+              }}
             >
-              {isApplying ? <LoaderCircle className="spin" size={18} /> : <Sparkles size={18} />}
-              {status === "live" ? "Apply look" : "Start live try-on"}
+              {isApplying
+                ? <LoaderCircle className="spin" size={18} />
+                : status === "live"
+                  ? <CircleStop size={18} />
+                  : <Sparkles size={18} />}
+              {status === "live" ? "Stop live try-on" : "Start live try-on"}
             </button>
 
             <div className="control-spacer" />
@@ -1485,6 +1668,11 @@ export default function App() {
             {recordingUrl && !isRecording && (
               <button className="secondary-button" type="button" onClick={downloadRecording}>
                 <Download size={18} /> Download
+              </button>
+            )}
+            {capturedLookUrl && (
+              <button className="secondary-button" type="button" onClick={downloadCapturedLook}>
+                <Download size={18} /> Download photo
               </button>
             )}
           </div>
@@ -1543,6 +1731,23 @@ export default function App() {
             <input type="checkbox" checked={enhance} onChange={(event) => setEnhance(event.target.checked)} />
             <span className="toggle" aria-hidden="true"><span /></span>
           </label>
+
+          <label className="toggle-row gesture-toggle">
+            <span>
+              <strong>Hand gestures</strong>
+              <small>Raise left/right hand, open palm, or hands on waist/lower belly</small>
+            </span>
+            <input type="checkbox" checked={gestureEnabled} onChange={(event) => setGestureEnabled(event.target.checked)} />
+            <span className="toggle" aria-hidden="true"><span /></span>
+          </label>
+
+          <div className={`gesture-status ${gestureModelStatus}`}>
+            {gestureModelStatus === "loading" ? <LoaderCircle className="spin" size={17} /> : <Hand size={17} />}
+            <div>
+              <strong>{gestureModelStatus === "ready" ? detectedGesture : gestureModelStatus === "loading" ? "Loading gestures" : gestureModelStatus === "error" ? "Gesture error" : "Gestures waiting"}</strong>
+              <span>{!localStreamRef.current && gestureEnabled ? "Start the camera to enable gestures" : detectedGesture}</span>
+            </div>
+          </div>
 
           <label className="field-label" htmlFor="resolution">Output quality</label>
           <select
