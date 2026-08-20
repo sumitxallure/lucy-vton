@@ -64,7 +64,14 @@ CLOSURE_TERMS = [
     "suit",
 ]
 
-VTON_PROMPT_MAX_WORDS = 75
+VTON_PROMPT_MAX_WORDS = 62
+
+INTENDED_WEARER_LABELS = {
+    "men": "menswear",
+    "women": "womenswear",
+    "unisex": "unisex",
+    "not_specified": "original",
+}
 
 KNOWN_IMAGE_MATCHES = {
     "futuristic ivory padded sculptural outfit": "Ivory Padded Full Look.png",
@@ -104,6 +111,32 @@ def with_article(value):
     return ("an " if re.match(r"^[aeiou]", value, re.I) else "a ") + value
 
 
+def normalize_intended_wearer(value):
+    if not value:
+        return None
+    normalized = re.sub(r"[^a-z]", "", value.lower())
+    if normalized in ["men", "mens", "male", "man"]:
+        return "men"
+    if normalized in ["women", "womens", "female", "woman", "ladies"]:
+        return "women"
+    if normalized in ["unisex", "genderneutral", "neutral", "all"]:
+        return "unisex"
+    if normalized in ["notspecified", "unspecified", "unknown", "na"]:
+        return "not_specified"
+    return None
+
+
+def infer_intended_wearer(*values):
+    text = " ".join(value for value in values if value).lower()
+    if re.search(r"\b(unisex|gender[-\s]?neutral)\b", text):
+        return "unisex"
+    if re.search(r"\b(mens|men's|men|male|man)\b", text):
+        return "men"
+    if re.search(r"\b(womens|women's|women|female|woman|ladies)\b", text):
+        return "women"
+    return "not_specified"
+
+
 def parse_description(raw_text):
     fields = {}
     for line in raw_text.splitlines():
@@ -138,6 +171,7 @@ def parse_description(raw_text):
     def optional(label):
         return fields.get(normalize_field_name(label))
 
+    intended_wearer = normalize_intended_wearer(optional("Intended wearer"))
     color = optional("Color")
     material = optional("Material or Texture")
     base = with_article(" ".join(lower_first(value) for value in [color, garment_type] if value))
@@ -166,6 +200,7 @@ def parse_description(raw_text):
         "display_name": display_name,
         "operation": operation,
         "target_region": target_region,
+        "intended_wearer": intended_wearer or infer_intended_wearer(display_name, garment_type, description),
         "description": description,
     }
 
@@ -178,10 +213,15 @@ def generate_prompt(description):
     can_be_closed = any(term in lower_details for term in CLOSURE_TERMS)
     states_open_or_closed = re.search(r"\b(open|opened|closed|zipped|buttoned|fastened|unbuttoned)\b", details, re.I)
     closure = "Closed/fastened if possible." if can_be_closed and not states_open_or_closed else "Keep reference closure."
-    safety = "Opaque modest coverage; keep/add inner shirt if open."
+    safety = "No bare chest, stomach, underwear, or skin gaps. If open, transparent, cutout, or motion exposes skin, add fitted opaque matching inner layer."
     fit = "Natural fit, aligned shoulders, waist, sleeves, hems."
     preserve = PRESERVE_INSTRUCTIONS[description["target_region"]]
-    tail = f"{closure} {safety} {fit} {preserve}"
+    intended_wearer = description.get("intended_wearer") or infer_intended_wearer(description["display_name"], description["description"])
+    if intended_wearer == "not_specified":
+        wearer = "Fit visible adult wearer; preserve original design."
+    else:
+        wearer = f"Fit visible adult wearer; preserve {INTENDED_WEARER_LABELS[intended_wearer]} design."
+    tail = f"{wearer} {closure} {safety} {fit} {preserve}"
     if description["operation"] == "add":
         return f"Add {details} to the outfit. {tail}"
     return f"Substitute the {REGION_LABELS[description['target_region']]} with {details}. {tail}"

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { GestureInterpreter } from "./gestureInterpreter";
-import type { GestureCommand, GestureWorkerRequest, GestureWorkerResponse } from "./gestureTypes";
+import type { GestureCommand, GestureIntent, GestureWorkerRequest, GestureWorkerResponse } from "./gestureTypes";
 
 type GestureModelStatus = "disabled" | "loading" | "ready" | "error";
 
@@ -16,6 +16,7 @@ const DEBUG_LOG_INTERVAL_MS = 500;
 export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureControlsOptions) {
   const [modelStatus, setModelStatus] = useState<GestureModelStatus>(enabled ? "loading" : "disabled");
   const [detectedGesture, setDetectedGesture] = useState("No hand detected");
+  const [gestureIntent, setGestureIntent] = useState<GestureIntent | null>(null);
   const commandRef = useRef(onCommand);
 
   useEffect(() => {
@@ -26,6 +27,7 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
     if (!enabled) {
       setModelStatus("disabled");
       setDetectedGesture("Gesture controls are off");
+      setGestureIntent(null);
       return undefined;
     }
 
@@ -84,6 +86,7 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
         console.info("[gesture] worker ready");
         setModelStatus("ready");
         setDetectedGesture("Ready for a gesture");
+        setGestureIntent(null);
         scheduleFrame();
         return;
       }
@@ -92,6 +95,7 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
         console.error("[gesture] worker error", response.message);
         setModelStatus("error");
         setDetectedGesture(response.message);
+        setGestureIntent(null);
         return;
       }
 
@@ -130,7 +134,10 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
       });
       if (command) {
         console.info("[gesture] command", command);
+        setGestureIntent(null);
         commandRef.current(command);
+      } else {
+        setGestureIntent(interpreter.getIntent(response.timestamp));
       }
       scheduleFrame();
     };
@@ -140,11 +147,13 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
       console.error("[gesture] worker onerror", event.message || event);
       setModelStatus("error");
       setDetectedGesture(event.message || "Gesture recognition failed to load.");
+      setGestureIntent(null);
     };
 
     console.info("[gesture] starting worker");
     setModelStatus("loading");
     setDetectedGesture("Loading gesture recognition");
+    setGestureIntent(null);
     const initializeRequest: GestureWorkerRequest = { type: "initialize" };
     worker.postMessage(initializeRequest);
 
@@ -157,5 +166,5 @@ export function useGestureControls({ enabled, videoRef, onCommand }: UseGestureC
     };
   }, [enabled, videoRef]);
 
-  return { modelStatus, detectedGesture };
+  return { modelStatus, detectedGesture, gestureIntent };
 }

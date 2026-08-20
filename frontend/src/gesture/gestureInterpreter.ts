@@ -1,4 +1,4 @@
-import type { GestureCommand, GestureSample } from "./gestureTypes";
+import type { GestureCommand, GestureIntent, GestureSample } from "./gestureTypes";
 
 const MIN_CONFIDENCE = 0.55;
 const MIN_POSE_CONFIDENCE = 0.55;
@@ -99,6 +99,42 @@ export class GestureInterpreter {
 
     this.clearCandidate();
     return null;
+  }
+
+  getIntent(timestamp: number): GestureIntent | null {
+    if (!this.candidate || this.awaitingRelease || timestamp < this.cooldownUntil) return null;
+
+    const elapsed = Math.max(0, timestamp - this.candidateStartedAt);
+    if (this.candidate === "left-hand-raised") {
+      return {
+        kind: "previous",
+        label: "Previous garment",
+        hint: "Keep left hand raised",
+        progress: Math.min(1, elapsed / RAISED_HAND_HOLD_MS),
+      };
+    }
+    if (this.candidate === "right-hand-raised") {
+      return {
+        kind: "next",
+        label: "Next garment",
+        hint: "Keep right hand raised",
+        progress: Math.min(1, elapsed / RAISED_HAND_HOLD_MS),
+      };
+    }
+    if (this.candidate === "open-palm") {
+      return {
+        kind: "toggle",
+        label: "Start/stop",
+        hint: "Keep open palm steady",
+        progress: Math.min(1, elapsed / OPEN_PALM_HOLD_MS),
+      };
+    }
+    return {
+      kind: "capture",
+      label: "Capture look",
+      hint: "Keep both hands on waist",
+      progress: Math.min(1, elapsed / WAIST_CAPTURE_HOLD_MS),
+    };
   }
 
   private beginCandidate(candidate: "open-palm" | "waist-capture" | "left-hand-raised" | "right-hand-raised", sample: GestureSample) {

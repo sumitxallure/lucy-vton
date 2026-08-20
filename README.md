@@ -48,6 +48,7 @@ The human-readable format is:
 Garment Name: Dark Green Utility Jacket
 Action: Replace
 Worn Area: Upper body
+Intended wearer: Men
 Garment Type: Hooded utility jacket
 Color: Dark green
 Material or Texture: Matte woven fabric
@@ -63,15 +64,16 @@ Visible Logo, Graphic, or Text: Small white logo on the left chest
 Other Visible Details: Slightly dropped shoulders
 ```
 
-`Action` accepts `Replace` or `Add`. `Worn Area` accepts `Upper body`, `Lower body`, `Full outfit`, `Footwear`, `Hat or headwear`, `Necklace`, or `Accessory`. The app parses the text, maps it into its internal structured data, and generates the prompt recommended by Decart's VTON prompting guide.
+`Action` accepts `Replace` or `Add`. `Worn Area` accepts `Upper body`, `Lower body`, `Full outfit`, `Footwear`, `Hat or headwear`, `Necklace`, or `Accessory`. `Intended wearer` is optional and accepts `Men`, `Women`, `Unisex`, or `Not specified`; when omitted, the app infers it from the garment name/type/description when possible. The app parses the text, maps it into its internal structured data, and generates the prompt recommended by Decart's VTON prompting guide.
 
 When a garment image and matching TXT are uploaded together, the backend saves the image in a private Supabase Storage bucket and saves the parsed description/prompt in the `garments` table. On page load, the frontend fetches the saved wardrobe and converts each stored image back into a browser `File` object before calling Lucy.
 
 The app also wraps every generated VTON prompt with production safety instructions:
 
 - close or fasten jackets, shirts, coats, blazers, vests, hoodies, suits, and similar garments when physically possible
-- preserve the user's existing inner layer or add a plain opaque neutral inner layer when a garment must remain open
-- prevent exposed chest, torso, underwear, or private areas
+- fit the garment to the visible adult wearer while preserving the garment's menswear, womenswear, unisex, or original design category
+- preserve the user's existing inner layer or add a fitted opaque matching inner layer when a garment must remain open, transparent, cut out, or moves during try-on
+- prevent exposed chest, stomach, torso skin gaps, underwear, or private areas
 - preserve unchanged outfit regions, such as keeping lower-body clothing unchanged for upper-body try-on
 - keep pose, face, body shape, background, and lighting stable
 - fit the garment naturally to shoulders, waist, sleeves, hems, and visible edges

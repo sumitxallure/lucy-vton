@@ -8,6 +8,15 @@ export type GestureCommand =
   | "toggle-live"
   | "capture-look";
 
+export type GestureIntentKind = "previous" | "next" | "toggle" | "capture";
+
+export type GestureIntent = {
+  kind: GestureIntentKind;
+  label: string;
+  hint: string;
+  progress: number;
+};
+
 export type GestureSample = {
   gesture: RecognizedGesture;
   gestureSource: GestureSource;

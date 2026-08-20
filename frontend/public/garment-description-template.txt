@@ -1,6 +1,7 @@
 Garment Name: Dark Green Utility Jacket
 Action: Replace
 Worn Area: Upper body
+Intended wearer: Men
 Garment Type: Hooded utility jacket
 Color: Dark green
 Material or Texture: Matte woven fabric

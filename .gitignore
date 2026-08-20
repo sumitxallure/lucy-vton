@@ -3,7 +3,7 @@ dist/
 .env
 *.local
 *.log
-bulk-wardrobe-review.csv
+bulk-wardrobe-review*.csv
 __pycache__/
 *.pyc
 *.tsbuildinfo
