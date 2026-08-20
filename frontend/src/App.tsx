@@ -1,4 +1,6 @@
 import {
+  ArrowLeft,
+  ArrowRight,
   Camera,
   CameraOff,
   Check,
@@ -18,9 +20,9 @@ import {
   Video,
 } from "lucide-react";
 import { createDecartClient, models, type RealTimeClient } from "@decartai/sdk";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useGestureControls } from "./gesture/useGestureControls";
-import type { GestureCommand } from "./gesture/gestureTypes";
+import type { GestureCommand, GestureIntent } from "./gesture/gestureTypes";
 
 type Garment = {
   id: string;
@@ -40,12 +42,14 @@ type Garment = {
 
 type GarmentOperation = "substitute" | "add";
 type GarmentRegion = "upper_body" | "lower_body" | "outfit" | "footwear" | "hat" | "necklace" | "accessory";
+type IntendedWearer = "men" | "women" | "unisex" | "not_specified";
 
 type GarmentDescription = {
   schema_version: 1;
   display_name: string;
   operation: GarmentOperation;
   target_region: GarmentRegion;
+  intended_wearer?: IntendedWearer;
   description: string;
 };
 
@@ -108,10 +112,15 @@ type DescriptionCandidate = {
   rawText: string;
 };
 
+type GestureCommandFlash = {
+  command: GestureCommand;
+  id: number;
+};
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
 const GARMENT_IMAGE_MAX_SIDE = 1280;
 const GARMENT_IMAGE_QUALITY = 0.9;
-const VTON_PROMPT_MAX_WORDS = 75;
+const VTON_PROMPT_MAX_WORDS = 62;
 const DESKTOP_CAMERA_WIDTH = 1920;
 const DESKTOP_CAMERA_HEIGHT = 1080;
 const DESKTOP_CAMERA_FPS = 30;
@@ -152,6 +161,13 @@ const closureSensitiveTerms = [
   "tuxedo",
   "suit",
 ];
+
+const intendedWearerLabels: Record<IntendedWearer, string> = {
+  men: "menswear",
+  women: "womenswear",
+  unisex: "unisex",
+  not_specified: "original",
+};
 
 function fileStem(fileName: string) {
   return fileName.replace(/\.[^.]+$/, "").trim().toLowerCase();
@@ -225,6 +241,24 @@ function withArticle(value: string) {
   const normalized = lowerFirst(value);
   if (!normalized || /^(a|an|the)\s/i.test(normalized)) return normalized;
   return `${/^[aeiou]/i.test(normalized) ? "an" : "a"} ${normalized}`;
+}
+
+function normalizeIntendedWearer(value?: string): IntendedWearer | undefined {
+  if (!value) return undefined;
+  const normalized = value.toLowerCase().replace(/[^a-z]/g, "");
+  if (["men", "mens", "male", "man"].includes(normalized)) return "men";
+  if (["women", "womens", "female", "woman", "ladies"].includes(normalized)) return "women";
+  if (["unisex", "genderneutral", "neutral", "all"].includes(normalized)) return "unisex";
+  if (["notspecified", "unspecified", "unknown", "na"].includes(normalized)) return "not_specified";
+  return undefined;
+}
+
+function inferIntendedWearer(...values: Array<string | undefined>): IntendedWearer {
+  const text = values.filter(Boolean).join(" ").toLowerCase();
+  if (/\b(unisex|gender[-\s]?neutral)\b/.test(text)) return "unisex";
+  if (/\b(mens|men's|men|male|man)\b/.test(text)) return "men";
+  if (/\b(womens|women's|women|female|woman|ladies)\b/.test(text)) return "women";
+  return "not_specified";
 }
 
 function limitWords(value: string, maxWords: number) {
@@ -302,6 +336,7 @@ function parseGarmentDescription(text: string): GarmentDescription {
   if (!targetRegion) throw new Error("Worn Area is not supported. Use Upper body, Lower body, Full outfit, Footwear, Hat or headwear, Necklace, or Accessory.");
 
   const optional = (label: string) => fields.get(normalizeFieldName(label));
+  const intendedWearer = normalizeIntendedWearer(optional("Intended wearer"));
   const color = optional("Color");
   const material = optional("Material or Texture");
   const base = withArticle([color, garmentType].filter(Boolean).map((value) => lowerFirst(value!)).join(" "));
@@ -325,6 +360,7 @@ function parseGarmentDescription(text: string): GarmentDescription {
     display_name: displayName,
     operation,
     target_region: targetRegion,
+    intended_wearer: intendedWearer ?? inferIntendedWearer(displayName, garmentType, description),
     description,
   };
 }
@@ -352,13 +388,14 @@ function generateVtonPrompt(description: GarmentDescription) {
   const closureInstruction = canBeClosed && !alreadyStatesOpenOrClosed
     ? "Closed/fastened if possible."
     : "Keep reference closure.";
-  const modestyInstruction = "Opaque modest coverage; keep/add inner shirt if open.";
+  const modestyInstruction = "No bare chest, stomach, underwear, or skin gaps. If open, transparent, cutout, or motion exposes skin, add fitted opaque matching inner layer.";
   const fitInstruction = "Natural fit, aligned shoulders, waist, sleeves, hems.";
   const preserveInstruction = preserveRegionInstructions[description.target_region];
-  const maleFitInstruction = description.target_region === "outfit"
-    ? "Style for an adult male wearer; keep masculine fit and proportions."
-    : "";
-  const safetyTail = [maleFitInstruction, closureInstruction, modestyInstruction, fitInstruction, preserveInstruction]
+  const intendedWearer = description.intended_wearer ?? inferIntendedWearer(description.display_name, description.description);
+  const wearerInstruction = intendedWearer === "not_specified"
+    ? "Fit visible adult wearer; preserve original design."
+    : `Fit visible adult wearer; preserve ${intendedWearerLabels[intendedWearer]} design.`;
+  const safetyTail = [wearerInstruction, closureInstruction, modestyInstruction, fitInstruction, preserveInstruction]
     .filter(Boolean)
     .join(" ");
 
@@ -412,6 +449,13 @@ function formatPixels(width: number | null, height: number | null) {
 
 function formatFps(value: number | null) {
   return value ? `${Math.round(value)} FPS` : "Not reported";
+}
+
+function gestureCommandLabel(command: GestureCommand) {
+  if (command === "previous-garment") return "Previous garment selected";
+  if (command === "next-garment") return "Next garment selected";
+  if (command === "toggle-live") return "Live try-on toggled";
+  return "Look captured";
 }
 
 function createMotionReader(video: HTMLVideoElement) {
@@ -512,6 +556,8 @@ export default function App() {
   const [gestureEnabled, setGestureEnabled] = useState(true);
   const [localFrameAspect, setLocalFrameAspect] = useState<VideoFrameAspect>("empty");
   const [outputFrameAspect, setOutputFrameAspect] = useState<VideoFrameAspect>("empty");
+  const [gestureCommandFlash, setGestureCommandFlash] = useState<GestureCommandFlash | null>(null);
+  const [captureFlashId, setCaptureFlashId] = useState(0);
   const [diagnostics, setDiagnostics] = useState<SessionDiagnostics>({
     sessionStartedAt: null,
     connectedAt: null,
@@ -558,6 +604,7 @@ export default function App() {
   const garmentsRef = useRef<Garment[]>([]);
   const preloadingIdsRef = useRef(new Set<string>());
   const isPreloadingWardrobeRef = useRef(false);
+  const garmentCardRefs = useRef(new Map<string, HTMLDivElement>());
 
   const generatedPrompt = selectedGarment?.description ? generateVtonPrompt(selectedGarment.description) : "";
 
@@ -748,6 +795,21 @@ export default function App() {
   useEffect(() => {
     garmentsRef.current = garments;
   }, [garments]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    garmentCardRefs.current.get(selectedId)?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+      behavior: "smooth",
+    });
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!gestureCommandFlash) return undefined;
+    const timer = window.setTimeout(() => setGestureCommandFlash(null), 1200);
+    return () => window.clearTimeout(timer);
+  }, [gestureCommandFlash]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -1343,6 +1405,7 @@ export default function App() {
       capturedLookUrlRef.current = url;
       setCapturedLookUrl(url);
       setCapturedLookFileName(fileName);
+      setCaptureFlashId((value) => value + 1);
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = fileName;
@@ -1367,6 +1430,8 @@ export default function App() {
       return;
     }
 
+    setGestureCommandFlash({ command, id: Date.now() });
+
     if (command === "next-garment") {
       selectAdjacentGarment("next");
       return;
@@ -1388,7 +1453,7 @@ export default function App() {
   };
 
   const gestureActive = gestureEnabled && Boolean(localStreamRef.current);
-  const { modelStatus: gestureModelStatus, detectedGesture } = useGestureControls({
+  const { modelStatus: gestureModelStatus, detectedGesture, gestureIntent } = useGestureControls({
     enabled: gestureActive,
     videoRef: localVideoRef,
     onCommand: handleGestureCommand,
@@ -1479,6 +1544,22 @@ export default function App() {
   const minutes = Math.floor(recordingDuration / 60).toString().padStart(2, "0");
   const seconds = (recordingDuration % 60).toString().padStart(2, "0");
   const outputPixels = diagnostics.outputWidth && diagnostics.outputHeight ? `${diagnostics.outputWidth} x ${diagnostics.outputHeight}` : "Waiting";
+  const gestureCue = gestureModelStatus === "ready" ? gestureIntent : null;
+  const gestureCueIcon = gestureCue?.kind === "previous"
+    ? <ArrowLeft size={22} />
+    : gestureCue?.kind === "next"
+      ? <ArrowRight size={22} />
+      : gestureCue?.kind === "capture"
+        ? <Camera size={22} />
+        : <Hand size={22} />;
+  const gestureProgressStyle = gestureCue
+    ? ({ "--gesture-progress": gestureCue.progress.toString() } as CSSProperties)
+    : undefined;
+  const outputStageState = status === "connecting" || isApplying
+    ? "working"
+    : isOutputVideoReady
+      ? "ready"
+      : "";
 
   return (
     <div className="app-shell">
@@ -1532,7 +1613,14 @@ export default function App() {
           ) : (
             <div className="garment-grid">
               {garments.map((garment) => (
-                <div className={`garment-card ${selectedId === garment.id ? "selected" : ""}`} key={garment.id}>
+                <div
+                  className={`garment-card ${selectedId === garment.id ? "selected" : ""}`}
+                  key={garment.id}
+                  ref={(element) => {
+                    if (element) garmentCardRefs.current.set(garment.id, element);
+                    else garmentCardRefs.current.delete(garment.id);
+                  }}
+                >
                   <button type="button" className="garment-select" onClick={() => selectGarment(garment)} aria-label={`Try on ${garment.name}`}>
                     <img src={garment.previewUrl} alt={garment.name} />
                     {selectedId === garment.id && <span className="selected-mark"><Check size={14} /></span>}
@@ -1577,7 +1665,7 @@ export default function App() {
               )}
             </div>
 
-            <div className={`video-stage output-stage ${outputFrameAspect}-frame`}>
+            <div className={`video-stage output-stage ${outputFrameAspect}-frame ${outputStageState}`}>
               <div className="stage-label"><Sparkles size={15} /> Lucy output</div>
               <video
                 ref={outputVideoRef}
@@ -1618,8 +1706,34 @@ export default function App() {
                 </div>
               )}
               {isRecording && <div className="recording-indicator"><span /> REC {minutes}:{seconds}</div>}
+              {captureFlashId > 0 && <div className="capture-flash" key={captureFlashId} />}
             </div>
           </div>
+
+          <div className={`gesture-feedback ${gestureCue ? `visible ${gestureCue.kind}` : ""}`} aria-live="polite">
+            {gestureCue ? (
+              <>
+                <span className="gesture-feedback-icon">{gestureCueIcon}</span>
+                <span className="gesture-feedback-copy">
+                  <strong>{gestureCue.label}</strong>
+                  <small>{gestureCue.hint}</small>
+                </span>
+                <span className="gesture-progress" style={gestureProgressStyle} />
+              </>
+            ) : (
+              <span className="gesture-feedback-copy">
+                <strong>Gesture controls ready</strong>
+                <small>Waiting for a clear command</small>
+              </span>
+            )}
+          </div>
+
+          {gestureCommandFlash && (
+            <div className="gesture-command-flash" key={gestureCommandFlash.id}>
+              <Check size={16} />
+              {gestureCommandLabel(gestureCommandFlash.command)}
+            </div>
+          )}
 
           <div className={`notice ${status === "error" ? "notice-error" : ""}`}>
             <span className="notice-icon">{status === "error" ? "!" : status === "live" ? <Check size={14} /> : <Radio size={14} />}</span>

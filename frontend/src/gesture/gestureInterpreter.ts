@@ -1,9 +1,10 @@
-import type { GestureCommand, GestureSample } from "./gestureTypes";
+import type { GestureCommand, GestureIntent, GestureSample } from "./gestureTypes";
 
 const MIN_CONFIDENCE = 0.55;
 const MIN_POSE_CONFIDENCE = 0.55;
+const MIN_WAIST_CAPTURE_CONFIDENCE = 0.72;
 const OPEN_PALM_HOLD_MS = 850;
-const WAIST_CAPTURE_HOLD_MS = 1000;
+const WAIST_CAPTURE_HOLD_MS = 1700;
 const RAISED_HAND_HOLD_MS = 650;
 const CANDIDATE_GRACE_MS = 650;
 const RELEASE_MS = 850;
@@ -72,7 +73,7 @@ export class GestureInterpreter {
       return null;
     }
 
-    if (sample.pose === "Both_Hands_On_Waist" && sample.poseConfidence >= MIN_POSE_CONFIDENCE) {
+    if (sample.pose === "Both_Hands_On_Waist" && sample.poseConfidence >= MIN_WAIST_CAPTURE_CONFIDENCE) {
       if (this.candidate !== "waist-capture") this.beginCandidate("waist-capture", sample);
       else this.candidateLastSeenAt = sample.timestamp;
       if (sample.timestamp - this.candidateStartedAt >= WAIST_CAPTURE_HOLD_MS) {
@@ -99,6 +100,42 @@ export class GestureInterpreter {
 
     this.clearCandidate();
     return null;
+  }
+
+  getIntent(timestamp: number): GestureIntent | null {
+    if (!this.candidate || this.awaitingRelease || timestamp < this.cooldownUntil) return null;
+
+    const elapsed = Math.max(0, timestamp - this.candidateStartedAt);
+    if (this.candidate === "left-hand-raised") {
+      return {
+        kind: "previous",
+        label: "Previous garment",
+        hint: "Keep left hand raised",
+        progress: Math.min(1, elapsed / RAISED_HAND_HOLD_MS),
+      };
+    }
+    if (this.candidate === "right-hand-raised") {
+      return {
+        kind: "next",
+        label: "Next garment",
+        hint: "Keep right hand raised",
+        progress: Math.min(1, elapsed / RAISED_HAND_HOLD_MS),
+      };
+    }
+    if (this.candidate === "open-palm") {
+      return {
+        kind: "toggle",
+        label: "Start/stop",
+        hint: "Keep open palm steady",
+        progress: Math.min(1, elapsed / OPEN_PALM_HOLD_MS),
+      };
+    }
+    return {
+      kind: "capture",
+      label: "Capture look",
+      hint: "Keep both hands on waist",
+      progress: Math.min(1, elapsed / WAIST_CAPTURE_HOLD_MS),
+    };
   }
 
   private beginCandidate(candidate: "open-palm" | "waist-capture" | "left-hand-raised" | "right-hand-raised", sample: GestureSample) {

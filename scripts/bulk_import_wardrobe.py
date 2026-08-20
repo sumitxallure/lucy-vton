@@ -17,6 +17,7 @@ REGION_BY_WORN_AREA = {
     "full body": "outfit",
     "full outfit": "outfit",
     "outfit": "outfit",
+    "upper body and lower body": "outfit",
     "footwear": "footwear",
     "shoes": "footwear",
     "hat or headwear": "hat",
@@ -64,7 +65,14 @@ CLOSURE_TERMS = [
     "suit",
 ]
 
-VTON_PROMPT_MAX_WORDS = 75
+VTON_PROMPT_MAX_WORDS = 62
+
+INTENDED_WEARER_LABELS = {
+    "men": "menswear",
+    "women": "womenswear",
+    "unisex": "unisex",
+    "not_specified": "original",
+}
 
 KNOWN_IMAGE_MATCHES = {
     "futuristic ivory padded sculptural outfit": "Ivory Padded Full Look.png",
@@ -104,6 +112,32 @@ def with_article(value):
     return ("an " if re.match(r"^[aeiou]", value, re.I) else "a ") + value
 
 
+def normalize_intended_wearer(value):
+    if not value:
+        return None
+    normalized = re.sub(r"[^a-z]", "", value.lower())
+    if normalized in ["men", "mens", "male", "man"]:
+        return "men"
+    if normalized in ["women", "womens", "female", "woman", "ladies"]:
+        return "women"
+    if normalized in ["unisex", "genderneutral", "neutral", "all"]:
+        return "unisex"
+    if normalized in ["notspecified", "unspecified", "unknown", "na"]:
+        return "not_specified"
+    return None
+
+
+def infer_intended_wearer(*values):
+    text = " ".join(value for value in values if value).lower()
+    if re.search(r"\b(unisex|gender[-\s]?neutral)\b", text):
+        return "unisex"
+    if re.search(r"\b(mens|men's|men|male|man)\b", text):
+        return "men"
+    if re.search(r"\b(womens|women's|women|female|woman|ladies)\b", text):
+        return "women"
+    return "not_specified"
+
+
 def parse_description(raw_text):
     fields = {}
     for line in raw_text.splitlines():
@@ -138,6 +172,7 @@ def parse_description(raw_text):
     def optional(label):
         return fields.get(normalize_field_name(label))
 
+    intended_wearer = normalize_intended_wearer(optional("Intended wearer"))
     color = optional("Color")
     material = optional("Material or Texture")
     base = with_article(" ".join(lower_first(value) for value in [color, garment_type] if value))
@@ -166,6 +201,7 @@ def parse_description(raw_text):
         "display_name": display_name,
         "operation": operation,
         "target_region": target_region,
+        "intended_wearer": intended_wearer or infer_intended_wearer(display_name, garment_type, description),
         "description": description,
     }
 
@@ -178,10 +214,15 @@ def generate_prompt(description):
     can_be_closed = any(term in lower_details for term in CLOSURE_TERMS)
     states_open_or_closed = re.search(r"\b(open|opened|closed|zipped|buttoned|fastened|unbuttoned)\b", details, re.I)
     closure = "Closed/fastened if possible." if can_be_closed and not states_open_or_closed else "Keep reference closure."
-    safety = "Opaque modest coverage; keep/add inner shirt if open."
+    safety = "No bare chest, stomach, underwear, or skin gaps. If open, transparent, cutout, or motion exposes skin, add fitted opaque matching inner layer."
     fit = "Natural fit, aligned shoulders, waist, sleeves, hems."
     preserve = PRESERVE_INSTRUCTIONS[description["target_region"]]
-    tail = f"{closure} {safety} {fit} {preserve}"
+    intended_wearer = description.get("intended_wearer") or infer_intended_wearer(description["display_name"], description["description"])
+    if intended_wearer == "not_specified":
+        wearer = "Fit visible adult wearer; preserve original design."
+    else:
+        wearer = f"Fit visible adult wearer; preserve {INTENDED_WEARER_LABELS[intended_wearer]} design."
+    tail = f"{wearer} {closure} {safety} {fit} {preserve}"
     if description["operation"] == "add":
         return f"Add {details} to the outfit. {tail}"
     return f"Substitute the {REGION_LABELS[description['target_region']]} with {details}. {tail}"
@@ -275,8 +316,21 @@ def score_match(entry, image_path):
     return score
 
 
-def match_entries(entries, image_dir):
-    images = sorted([path for path in image_dir.iterdir() if path.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]])
+def collect_images(image_dirs):
+    images = []
+    seen = set()
+    for image_dir in image_dirs:
+        for path in sorted([path for path in image_dir.iterdir() if path.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]]):
+            key = str(path.resolve()).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            images.append(path)
+    return images
+
+
+def match_entries(entries, image_dirs):
+    images = collect_images(image_dirs)
     image_by_name = {image.name: image for image in images}
     rows = []
     used = set()
@@ -333,20 +387,21 @@ def post_multipart(url, image_path, raw_description, description, prompt):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Bulk import Lucy wardrobe garments from a PDF and image folder.")
+    parser = argparse.ArgumentParser(description="Bulk import Lucy wardrobe garments from a PDF and one or more image folders.")
     parser.add_argument("--pdf", required=True)
-    parser.add_argument("--images", required=True)
+    parser.add_argument("--images", required=True, nargs="+")
     parser.add_argument("--review-csv", default="bulk-wardrobe-review.csv")
     parser.add_argument("--api-base", default="http://localhost:3001")
     parser.add_argument("--upload", action="store_true")
     args = parser.parse_args()
 
     entries = extract_entries(Path(args.pdf))
-    rows = match_entries(entries, Path(args.images))
+    image_dirs = [Path(path) for path in args.images]
+    rows = match_entries(entries, image_dirs)
     review_path = Path(args.review_csv)
     review_path.parent.mkdir(parents=True, exist_ok=True)
     with review_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["status", "confidence", "garment_name", "worn_area", "matched_image"])
+        writer = csv.DictWriter(handle, fieldnames=["status", "confidence", "garment_name", "worn_area", "matched_folder", "matched_image"])
         writer.writeheader()
         for row in rows:
             writer.writerow({
@@ -354,6 +409,7 @@ def main():
                 "confidence": row["confidence"],
                 "garment_name": row["entry"]["fields"].get("Garment Name", ""),
                 "worn_area": row["entry"]["fields"].get("Worn Area", ""),
+                "matched_folder": row["image"].parent.name,
                 "matched_image": str(row["image"]),
             })
 

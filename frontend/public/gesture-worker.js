@@ -122,7 +122,7 @@ function getPoseCommand(landmarks) {
   if (raisedHand.pose !== "None") return raisedHand;
 
   const waistPose = getHandsOnWaist(landmarks);
-  if (waistPose.confidence >= 0.55) {
+  if (waistPose.confidence >= 0.68) {
     return { pose: "Both_Hands_On_Waist", confidence: waistPose.confidence };
   }
 
@@ -253,21 +253,20 @@ function scoreHandOnWaistSide(wrist, elbow, shoulder, hip, midX, shoulderWidth, 
   if (wristVisibility < 0.35 || elbowVisibility < 0.35 || hipVisibility < 0.35) return 0;
 
   const waistTargetX = hip.x * 0.65 + midX * 0.35;
-  const waistTargetY = shoulder.y + torsoHeight * 0.68;
+  const waistTargetY = shoulder.y + torsoHeight * 0.76;
   const dx = Math.abs(wrist.x - waistTargetX);
   const dy = Math.abs(wrist.y - waistTargetY);
-  const wristNearWaist = 1 - clamp01((dx / (shoulderWidth * 0.78) + dy / (torsoHeight * 0.52)) / 2);
-  const wristInWaistBand = wrist.y > shoulder.y + torsoHeight * 0.34 && wrist.y < hip.y + torsoHeight * 0.16;
-  const elbowOutsideWrist = Math.abs(elbow.x - midX) > Math.abs(wrist.x - midX) + shoulderWidth * 0.05;
+  const wristNearWaist = 1 - clamp01((dx / (shoulderWidth * 0.62) + dy / (torsoHeight * 0.5)) / 2);
+  const wristInWaistBand = wrist.y > shoulder.y + torsoHeight * 0.42 && wrist.y < hip.y + torsoHeight * 0.16;
+  const elbowOutsideWrist = Math.abs(elbow.x - midX) > Math.abs(wrist.x - midX) + shoulderWidth * 0.1;
   const elbowInUpperTorso = elbow.y > shoulder.y + torsoHeight * 0.1 && elbow.y < hip.y + torsoHeight * 0.18 ? 1 : 0;
   const elbowAngle = jointAngle(shoulder, elbow, wrist);
   const elbowBent = elbowAngle >= 45 && elbowAngle <= 145;
   const visibilityScore = Math.min(wristVisibility, elbowVisibility, hipVisibility);
-  if (wristNearWaist < 0.42 || !wristInWaistBand || !elbowBent) return 0;
+  if (wristNearWaist < 0.56 || !wristInWaistBand || !elbowBent || !elbowOutsideWrist) return 0;
 
   const elbowBendScore = 1 - clamp01(Math.abs(elbowAngle - 95) / 55);
-  const elbowIntentScore = elbowOutsideWrist ? 0.14 : 0.04;
-  return Math.min(1, wristNearWaist * 0.46 + 0.2 + elbowIntentScore + elbowBendScore * 0.12 + elbowInUpperTorso * 0.03 + visibilityScore * 0.05);
+  return Math.min(1, wristNearWaist * 0.5 + 0.2 + elbowBendScore * 0.14 + elbowInUpperTorso * 0.05 + visibilityScore * 0.06);
 }
 
 function scoreRaisedHand(wrist, shoulder) {
