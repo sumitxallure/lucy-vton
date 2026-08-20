@@ -2,8 +2,9 @@ import type { GestureCommand, GestureIntent, GestureSample } from "./gestureType
 
 const MIN_CONFIDENCE = 0.55;
 const MIN_POSE_CONFIDENCE = 0.55;
+const MIN_WAIST_CAPTURE_CONFIDENCE = 0.72;
 const OPEN_PALM_HOLD_MS = 850;
-const WAIST_CAPTURE_HOLD_MS = 1000;
+const WAIST_CAPTURE_HOLD_MS = 1700;
 const RAISED_HAND_HOLD_MS = 650;
 const CANDIDATE_GRACE_MS = 650;
 const RELEASE_MS = 850;
@@ -72,7 +73,7 @@ export class GestureInterpreter {
       return null;
     }
 
-    if (sample.pose === "Both_Hands_On_Waist" && sample.poseConfidence >= MIN_POSE_CONFIDENCE) {
+    if (sample.pose === "Both_Hands_On_Waist" && sample.poseConfidence >= MIN_WAIST_CAPTURE_CONFIDENCE) {
       if (this.candidate !== "waist-capture") this.beginCandidate("waist-capture", sample);
       else this.candidateLastSeenAt = sample.timestamp;
       if (sample.timestamp - this.candidateStartedAt >= WAIST_CAPTURE_HOLD_MS) {
